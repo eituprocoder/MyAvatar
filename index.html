@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eituprogamer - Avatar Animado con Reconocimiento Facial</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- MediaPipe / WebCam Face Mesh Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;800;900&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Rajdhani', sans-serif;
+      background-color: #050510;
+      color: #fff;
+      overflow: hidden;
+    }
+    .font-orbitron {
+      font-family: 'Orbitron', sans-serif;
+    }
+    .neon-text {
+      text-shadow: 0 0 10px #00f3ff, 0 0 20px #00f3ff, 0 0 40px #0088ff;
+    }
+    .neon-border {
+      box-shadow: 0 0 15px rgba(0, 243, 255, 0.4), inset 0 0 15px rgba(0, 243, 255, 0.2);
+    }
+    /* Hide webcam video, processed only on canvas */
+    #input_video {
+      display: none;
+    }
+  </style>
+</head>
+<body class="w-screen h-screen flex flex-col justify-between items-center relative select-none">
+
+  <!-- Elemento de vídeo oculto para procesamiento de la webcam -->
+  <video id="input_video" playsinline></video>
+
+  <!-- Header futurista -->
+  <header class="w-full p-4 flex justify-between items-center z-20 backdrop-blur-md bg-black/40 border-b border-cyan-500/30">
+    <div class="flex items-center gap-3">
+      <div class="w-4 h-4 rounded-full bg-cyan-400 animate-pulse"></div>
+      <h1 class="text-2xl md:text-3xl font-black font-orbitron tracking-wider text-cyan-400 neon-text">
+        EITUPROGAMER
+      </h1>
+      <span class="text-xs bg-cyan-950 text-cyan-300 border border-cyan-500 px-2 py-0.5 rounded font-mono hidden sm:inline-block">AVATAR AI v2.5</span>
+    </div>
+    
+    <!-- Estado e indicadores -->
+    <div class="flex items-center gap-4">
+      <div id="trackingStatus" class="flex items-center gap-2 text-xs md:text-sm font-semibold text-yellow-400 bg-yellow-950/40 border border-yellow-500/50 px-3 py-1 rounded-full">
+        <span class="w-2 h-2 rounded-full bg-yellow-400 animate-ping"></span>
+        <span>Modo Mouse / Auto</span>
+      </div>
+      <button id="toggleCamBtn" class="bg-cyan-600 hover:bg-cyan-500 text-black font-bold px-4 py-2 rounded-lg text-sm transition-all duration-300 font-orbitron shadow-[0_0_15px_rgba(0,243,255,0.5)] flex items-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+        Activar Cámara
+      </button>
+    </div>
+  </header>
+
+  <!-- Contenedor Principal con el Canvas para Avatar y Sci-Fi BG -->
+  <main class="relative w-full flex-grow flex justify-center items-center overflow-hidden">
+    <canvas id="stageCanvas" class="w-full h-full block absolute top-0 left-0"></canvas>
+    
+    <!-- Overlay de Instrucciones -->
+    <div id="instructionCard" class="absolute bottom-6 left-6 z-20 max-w-xs bg-black/60 backdrop-blur-md p-4 rounded-xl border border-cyan-500/30 text-xs text-gray-300 hidden md:block">
+      <p class="font-bold text-cyan-400 mb-1 font-orbitron">🕹️ INSTRUCCIONES</p>
+      <ul class="list-disc list-inside space-y-1">
+        <li>Activa la webcam para <b>Reconocimiento Facial</b>.</li>
+        <li>Mueve tu cabeza, parpadea o abre la boca.</li>
+        <li>Sin cámara: Mueve el cursor sobre la pantalla para dirigir la mirada del avatar.</li>
+      </ul>
+    </div>
+  </main>
+
+  <!-- Footer con controles de depuración rápida -->
+  <footer class="w-full p-2 z-20 backdrop-blur-md bg-black/60 border-t border-cyan-500/20 text-center text-xs text-cyan-500/70 flex justify-center items-center gap-6">
+    <span>EITU AI Face-Sync System</span>
+    <span>•</span>
+    <span>FPS: <span id="fpsCounter" class="text-cyan-300">60</span></span>
+    <span>•</span>
+    <span>Sensibilidad Boca: <input id="sensitivityMouth" type="range" min="1" max="3" value="1.5" step="0.1" class="accent-cyan-400 cursor-pointer"></span>
+  </footer>
+
+  <script>
+    // --- Estado global e inicialización ---
+    const canvas = document.getElementById('stageCanvas');
+    const ctx = canvas.getContext('2d');
+    const toggleCamBtn = document.getElementById('toggleCamBtn');
+    const trackingStatus = document.getElementById('trackingStatus');
+    const videoElement = document.getElementById('input_video');
+    const fpsCounter = document.getElementById('fpsCounter');
+    const sensitivityMouthInput = document.getElementById('sensitivityMouth');
+
+    let camera = null;
+    let isWebcamActive = false;
+    let lastFrameTime = performance.now();
+    let frameCount = 0;
+
+    // Datos interpolados para suavidad de animación (Target vs Current)
+    const avatarState = {
+      // Rotación de la cabeza (grados o offset relativo -1 a 1)
+      headYaw: 0, headYawTarget: 0,       // Izq / Der
+      headPitch: 0, headPitchTarget: 0,   // Arriba / Abajo
+      headRoll: 0, headRollTarget: 0,     // Inclinación
+      // Ojos
+      eyeOpenL: 1, eyeOpenLTarget: 1,     // 0 a 1
+      eyeOpenR: 1, eyeOpenRTarget: 1,
+      pupilX: 0, pupilXTarget: 0,
+      pupilY: 0, pupilYTarget: 0,
+      // Boca
+      mouthOpen: 0.1, mouthOpenTarget: 0.1, // 0 a 1
+      mouthWidth: 0.5, mouthWidthTarget: 0.5,
+      // Posición global suave
+      xOffset: 0, yOffset: 0
+    };
+
+    // Control por ratón si webcam desactivada
+    let mouseX = window.innerWidth / 2;
+    let mouseY = window.innerHeight / 2;
+
+    window.addEventListener('mousemove', (e) => {
+      mouseX = e.clientX;
+      mouseY = e.clientY;
+    });
+
+    // Ajuste de tamaño de Canvas responsivo
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // --- Configuración de MediaPipe Face Mesh ---
+    const faceMesh = new FaceMesh({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    faceMesh.onResults(onFaceResults);
+
+    function onFaceResults(results) {
+      if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        // Pérdida de rostro: volver suavemente a reposo
+        avatarState.headYawTarget = 0;
+        avatarState.headPitchTarget = 0;
+        avatarState.headRollTarget = 0;
+        avatarState.mouthOpenTarget = 0.1;
+        avatarState.eyeOpenLTarget = 1;
+        avatarState.eyeOpenRTarget = 1;
+        return;
+      }
+
+      const landmarks = results.multiFaceLandmarks[0];
+
+      // 1. Inclinación y Rotación Cabeza
+      const noseTip = landmarks[1];
+      const leftEar = landmarks[234];
+      const rightEar = landmarks[454];
+      const topHead = landmarks[10];
+      const chin = landmarks[152];
+
+      // Yaw (Giro Izq/Der)
+      const earDistX = rightEar.x - leftEar.x;
+      const noseRelativeX = (noseTip.x - leftEar.x) / (earDistX || 0.001) - 0.5;
+      avatarState.headYawTarget = -noseRelativeX * 2.2; // Invertido para espejo
+
+      // Pitch (Arriba/Abajo)
+      const faceHeight = chin.y - topHead.y;
+      const noseRelativeY = (noseTip.y - topHead.y) / (faceHeight || 0.001) - 0.5;
+      avatarState.headPitchTarget = noseRelativeY * 2.0;
+
+      // Roll (Inclinación Lateral)
+      const dy = rightEar.y - leftEar.y;
+      const dx = rightEar.x - leftEar.x;
+      avatarState.headRollTarget = Math.atan2(dy, dx);
+
+      // 2. Pupilas y Mirada
+      avatarState.pupilXTarget = avatarState.headYawTarget * 0.8;
+      avatarState.pupilYTarget = avatarState.headPitchTarget * 0.8;
+
+      // 3. Parpadeo (Distancia entre párpado superior e inferior)
+      const eyeLDist = Math.hypot(landmarks[159].x - landmarks[145].x, landmarks[159].y - landmarks[145].y);
+      const eyeRDist = Math.hypot(landmarks[386].x - landmarks[374].x, landmarks[386].y - landmarks[374].y);
+      
+      avatarState.eyeOpenLTarget = Math.min(Math.max((eyeLDist - 0.012) * 45, 0), 1);
+      avatarState.eyeOpenRTarget = Math.min(Math.max((eyeRDist - 0.012) * 45, 0), 1);
+
+      // 4. Apertura de Boca
+      const mouthDist = Math.hypot(landmarks[13].x - landmarks[14].x, landmarks[13].y - landmarks[14].y);
+      const mouthWidthDist = Math.hypot(landmarks[61].x - landmarks[291].x, landmarks[61].y - landmarks[291].y);
+      
+      const mult = parseFloat(sensitivityMouthInput.value);
+      avatarState.mouthOpenTarget = Math.min(Math.max((mouthDist - 0.015) * 20 * mult, 0), 1);
+      avatarState.mouthWidthTarget = Math.min(Math.max(mouthWidthDist * 3, 0.3), 1);
+    }
+
+    // Alternar Cámara
+    toggleCamBtn.addEventListener('click', async () => {
+      if (!isWebcamActive) {
+        try {
+          toggleCamBtn.innerText = "Iniciando...";
+          camera = new Camera(videoElement, {
+            onFrame: async () => {
+              await faceMesh.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480,
+            facingMode: 'user'
+          });
+          await camera.start();
+          isWebcamActive = true;
+          toggleCamBtn.innerText = "Desactivar Cámara";
+          toggleCamBtn.classList.replace('bg-cyan-600', 'bg-red-600');
+          toggleCamBtn.classList.replace('hover:bg-cyan-500', 'hover:bg-red-500');
+          trackingStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span><span>Face AI Activo</span>`;
+          trackingStatus.className = "flex items-center gap-2 text-xs md:text-sm font-semibold text-green-400 bg-green-950/40 border border-green-500/50 px-3 py-1 rounded-full";
+        } catch (err) {
+          alert("No se pudo acceder a la cámara. Revisa los permisos.");
+          toggleCamBtn.innerText = "Activar Cámara";
+          console.error(err);
+        }
+      } else {
+        if (camera) await camera.stop();
+        isWebcamActive = false;
+        toggleCamBtn.innerText = "Activar Cámara";
+        toggleCamBtn.classList.replace('bg-red-600', 'bg-cyan-600');
+        toggleCamBtn.classList.replace('hover:bg-red-500', 'hover:bg-cyan-500');
+        trackingStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-yellow-400 animate-ping"></span><span>Modo Mouse / Auto</span>`;
+        trackingStatus.className = "flex items-center gap-2 text-xs md:text-sm font-semibold text-yellow-400 bg-yellow-950/40 border border-yellow-500/50 px-3 py-1 rounded-full";
+      }
+    });
+
+    // --- SISTEMA DE PARTÍCULAS Y FONDO FUTURISTA ---
+    const particles = Array.from({ length: 60 }, () => ({
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+      z: Math.random() * 2 + 0.5,
+      speed: Math.random() * 1.5 + 0.5,
+      size: Math.random() * 2 + 1,
+      color: Math.random() > 0.5 ? '#00f3ff' : '#0055ff'
+    }));
+
+    let gridOffset = 0;
+
+    function drawFuturisticBackground(time) {
+      const width = canvas.width;
+      const height = canvas.height;
+
+      // 1. Fondo degradado profundo
+      const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+      bgGradient.addColorStop(0, '#03030c');
+      bgGradient.addColorStop(0.5, '#070b1e');
+      bgGradient.addColorStop(1, '#020208');
+      ctx.fillStyle = bgGradient;
+      ctx.fillRect(0, 0, width, height);
+
+      // 2. Cuadrícula Sci-Fi 3D / Synthwave Grid en la parte inferior
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0, 243, 255, 0.15)';
+      ctx.lineWidth = 1.5;
+
+      const horizon = height * 0.65;
+      gridOffset = (gridOffset + 1) % 40;
+
+      // Líneas horizontales en perspectiva
+      for (let y = horizon; y < height; y += (y - horizon) * 0.15 + 4) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      // Líneas perspectiva fugadas
+      const centerX = width / 2;
+      for (let x = -width; x < width * 2; x += 80) {
+        ctx.beginPath();
+        ctx.moveTo(x, height);
+        ctx.lineTo(centerX + (x - centerX) * 0.1, horizon);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // 3. Resplandor del horizonte
+      const horizonGlow = ctx.createRadialGradient(centerX, horizon, 10, centerX, horizon, width * 0.5);
+      horizonGlow.addColorStop(0, 'rgba(0, 243, 255, 0.25)');
+      horizonGlow.addColorStop(0.5, 'rgba(0, 80, 255, 0.08)');
+      horizonGlow.addColorStop(1, 'transparent');
+      ctx.fillStyle = horizonGlow;
+      ctx.fillRect(0, 0, width, height);
+
+      // 4. Partículas flotantes sci-fi
+      particles.forEach(p => {
+        p.y -= p.speed;
+        if (p.y < 0) {
+          p.y = height;
+          p.x = Math.random() * width;
+        }
+        ctx.fillStyle = p.color;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.z, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      });
+    }
+
+    // --- DIBUJO VECTORIAL DEL AVATAR (EITU PRO GAMER) ---
+    function drawAvatar(time) {
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2 + 30;
+      const scale = Math.min(canvas.width, canvas.height) / 750;
+
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.scale(scale, scale);
+
+      // Suavizado Lerp de variables objetivo a actuales
+      const lerpSpeed = 0.15;
+      avatarState.headYaw += (avatarState.headYawTarget - avatarState.headYaw) * lerpSpeed;
+      avatarState.headPitch += (avatarState.headPitchTarget - avatarState.headPitch) * lerpSpeed;
+      avatarState.headRoll += (avatarState.headRollTarget - avatarState.headRoll) * lerpSpeed;
+      avatarState.eyeOpenL += (avatarState.eyeOpenLTarget - avatarState.eyeOpenL) * lerpSpeed;
+      avatarState.eyeOpenR += (avatarState.eyeOpenRTarget - avatarState.eyeOpenR) * lerpSpeed;
+      avatarState.pupilX += (avatarState.pupilXTarget - avatarState.pupilX) * lerpSpeed;
+      avatarState.pupilY += (avatarState.pupilYTarget - avatarState.pupilY) * lerpSpeed;
+      avatarState.mouthOpen += (avatarState.mouthOpenTarget - avatarState.mouthOpen) * lerpSpeed;
+      avatarState.mouthWidth += (avatarState.mouthWidthTarget - avatarState.mouthWidth) * lerpSpeed;
+
+      // Si no hay webcam activa, animar suave con ratón y respiración
+      if (!isWebcamActive) {
+        const mouseOffX = (mouseX - canvas.width / 2) / (canvas.width / 2);
+        const mouseOffY = (mouseY - canvas.height / 2) / (canvas.height / 2);
+        avatarState.headYawTarget = mouseOffX * 0.4;
+        avatarState.headPitchTarget = mouseOffY * 0.3;
+        avatarState.pupilXTarget = mouseOffX * 0.6;
+        avatarState.pupilYTarget = mouseOffY * 0.6;
+
+        // Auto parpadeo aleatorio
+        if (Math.random() < 0.01) {
+          avatarState.eyeOpenLTarget = 0.1;
+          avatarState.eyeOpenRTarget = 0.1;
+          setTimeout(() => {
+            avatarState.eyeOpenLTarget = 1;
+            avatarState.eyeOpenRTarget = 1;
+          }, 150);
+        }
+
+        // Habla/Movimiento suave de boca automático sutil
+        avatarState.mouthOpenTarget = 0.08 + Math.sin(time * 0.005) * 0.05;
+      }
+
+      // Respiración (Idle Motion)
+      const idleBreath = Math.sin(time * 0.003) * 4;
+
+      // Desplazamiento transformado
+      const headX = avatarState.headYaw * 35;
+      const headY = avatarState.headPitch * 25 + idleBreath;
+
+      // ================= 1. CUERPO Y CAMISETA GAMER =================
+      ctx.save();
+      ctx.translate(headX * 0.2, idleBreath * 0.5);
+
+      // Sombra proyectada posterior
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.ellipse(0, 240, 150, 40, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Cuello
+      ctx.fillStyle = '#f3b49f';
+      ctx.fillRect(-30, 70, 60, 65);
+      // Sombra del cuello
+      ctx.fillStyle = '#d8907b';
+      ctx.beginPath();
+      ctx.moveTo(-30, 70);
+      ctx.lineTo(30, 70);
+      ctx.lineTo(25, 105);
+      ctx.lineTo(-25, 105);
+      ctx.closePath();
+      ctx.fill();
+
+      // Camiseta Deportiva Gamer (Negro/Azul Cyan)
+      ctx.fillStyle = '#0e131d';
+      ctx.beginPath();
+      ctx.moveTo(-160, 300);
+      ctx.lineTo(-120, 120);
+      ctx.lineTo(-40, 105);
+      ctx.lineTo(40, 105);
+      ctx.lineTo(120, 120);
+      ctx.lineTo(160, 300);
+      ctx.closePath();
+      ctx.fill();
+
+      // Franjas Cyan Neón en la Camiseta
+      ctx.strokeStyle = '#00f3ff';
+      ctx.lineWidth = 6;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = '#00f3ff';
+      ctx.beginPath();
+      ctx.moveTo(-120, 120);
+      ctx.lineTo(-40, 105);
+      ctx.moveTo(120, 120);
+      ctx.lineTo(40, 105);
+      ctx.moveTo(-35, 106);
+      ctx.quadraticCurveTo(0, 125, 35, 106);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Logo EITU en la camiseta
+      ctx.fillStyle = '#00f3ff';
+      ctx.font = '900 16px Orbitron';
+      ctx.textAlign = 'center';
+      ctx.fillText('EITU PRO', 0, 175);
+
+      // Brazos sujetando el mando Arcade
+      // Arm izq
+      ctx.fillStyle = '#f3b49f';
+      ctx.beginPath();
+      ctx.ellipse(-145, 230, 25, 70, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      // Arm der
+      ctx.beginPath();
+      ctx.ellipse(145, 230, 25, 70, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+
+      // ================= 2. MANDO ARCADE FIGHTSTICK =================
+      ctx.save();
+      ctx.translate(0, 190 + idleBreath * 0.3);
+
+      // Cuerpo principal del Fightstick
+      ctx.fillStyle = '#111625';
+      ctx.strokeStyle = '#00f3ff';
+      ctx.lineWidth = 3;
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = 'rgba(0, 243, 255, 0.5)';
+      ctx.beginPath();
+      ctx.roundRect(-160, 0, 320, 100, 16);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Joystick / Palanca
+      ctx.fillStyle = '#0a0d14';
+      ctx.beginPath();
+      ctx.arc(-90, 45, 24, 0, Math.PI * 2);
+      ctx.fill();
+      // Barra de la palanca
+      ctx.strokeStyle = '#888';
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      ctx.moveTo(-90, 45);
+      ctx.lineTo(-98 + avatarState.headYaw * 10, 15);
+      ctx.stroke();
+      // Bola del Joystick (Negro brillante con brillo cyan)
+      ctx.fillStyle = '#1a2436';
+      ctx.beginPath();
+      ctx.arc(-98 + avatarState.headYaw * 10, 15, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#00f3ff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Botones iluminados (RGB Arcade buttons como la foto)
+      const btnColors = ['#00ff66', '#ffbb00', '#ff0055', '#0099ff', '#00ffcc', '#ff00aa'];
+      const btnPositions = [
+        { x: -10, y: 35 }, { x: 30, y: 30 }, { x: 70, y: 35 },
+        { x: -5, y: 65 },  { x: 35, y: 60 }, { x: 75, y: 65 }
+      ];
+
+      btnPositions.forEach((pos, idx) => {
+        ctx.fillStyle = btnColors[idx % btnColors.length];
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = btnColors[idx % btnColors.length];
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.shadowBlur = 0;
+      ctx.restore();
+
+      // ================= 3. CABEZA Y ROSTRO DEL AVATAR =================
+      ctx.save();
+      ctx.translate(headX, headY);
+      ctx.rotate(avatarState.headRoll * 0.5);
+
+      // --- AURICULARES GAMER (Parte trasera del headband) ---
+      // Diadema exterior gruesa y estructurada estilo gaming pro
+      ctx.strokeStyle = '#0e1526';
+      ctx.lineWidth = 28;
+      ctx.beginPath();
+      ctx.arc(0, -30, 118, Math.PI * 0.95, Math.PI * 0.05);
+      ctx.stroke();
+
+      // Franja Cyan Neón superior con articulaciones de diadema
+      ctx.strokeStyle = '#00f3ff';
+      ctx.lineWidth = 5;
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = '#00f3ff';
+      ctx.beginPath();
+      ctx.arc(0, -30, 128, Math.PI * 0.88, Math.PI * 0.12);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Soportes metálicos de ajuste de auriculares
+      ctx.fillStyle = '#223048';
+      ctx.fillRect(-94, -35, 12, 25);
+      ctx.fillRect(82, -35, 12, 25);
+
+      // --- PIEL Y FORMA DE LA CARA ---
+      ctx.fillStyle = '#fbcbbd'; // Tono de piel anime cálido
+      ctx.beginPath();
+      ctx.moveTo(-75, -40);
+      ctx.quadraticCurveTo(-80, 40, -45, 75);
+      ctx.quadraticCurveTo(0, 105, 45, 75);
+      ctx.quadraticCurveTo(80, 40, 75, -40);
+      ctx.closePath();
+      ctx.fill();
+
+      // Sombra barbilla/lateral cara
+      ctx.fillStyle = 'rgba(216, 144, 123, 0.35)';
+      ctx.beginPath();
+      ctx.moveTo(35, 65);
+      ctx.quadraticCurveTo(0, 100, -35, 65);
+      ctx.quadraticCurveTo(0, 85, 35, 65);
+      ctx.fill();
+
+      // Orejas
+      ctx.fillStyle = '#fbcbbd';
+      ctx.beginPath();
+      ctx.arc(-76, 5, 15, 0, Math.PI * 2); // Oreja Izq
+      ctx.arc(76, 5, 15, 0, Math.PI * 2);  // Oreja Der
+      ctx.fill();
+
+      // --- CEJAS (Estilo anime pobladas expresivas) ---
+      ctx.strokeStyle = '#0b2e63';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+
+      const eyebrowY = -28 + avatarState.headPitch * 5;
+      // Ceja Izquierda
+      ctx.beginPath();
+      ctx.moveTo(-58, eyebrowY - avatarState.headPitch * 2);
+      ctx.lineTo(-20, eyebrowY - 5);
+      ctx.stroke();
+
+      // Ceja Derecha
+      ctx.beginPath();
+      ctx.moveTo(20, eyebrowY - 5);
+      ctx.lineTo(58, eyebrowY - avatarState.headPitch * 2);
+      ctx.stroke();
+
+      // --- OJOS ANIME AZULES (Tracking de pupila y parpadeo) ---
+      const drawEye = (isLeft) => {
+        const eyeX = isLeft ? -40 : 40;
+        const eyeY = 0;
+        const scaleY = isLeft ? avatarState.eyeOpenL : avatarState.eyeOpenR;
+
+        ctx.save();
+        ctx.translate(eyeX, eyeY);
+        ctx.scale(1, Math.max(scaleY, 0.08)); // Parpadeo vertical
+
+        // Esclerótica (Blanco del ojo)
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 22, 26, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#0b1e36';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // Iris Azul Anime (Degradado brillante)
+        const pupilOffsetX = avatarState.pupilX * 8;
+        const pupilOffsetY = avatarState.pupilY * 6;
+
+        const irisGrad = ctx.createRadialGradient(pupilOffsetX, pupilOffsetY, 2, pupilOffsetX, pupilOffsetY, 16);
+        irisGrad.addColorStop(0, '#00f3ff');
+        irisGrad.addColorStop(0.6, '#0066ff');
+        irisGrad.addColorStop(1, '#001a4d');
+
+        ctx.fillStyle = irisGrad;
+        ctx.beginPath();
+        ctx.ellipse(pupilOffsetX, pupilOffsetY, 14, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Pupila centro
+        ctx.fillStyle = '#030814';
+        ctx.beginPath();
+        ctx.arc(pupilOffsetX, pupilOffsetY, 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Brillo deslumbrante estilo anime (Catchlight)
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(pupilOffsetX - 5, pupilOffsetY - 6, 4.5, 0, Math.PI * 2);
+        ctx.arc(pupilOffsetX + 4, pupilOffsetY + 5, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Pestañas superiores estilizadas
+        ctx.strokeStyle = '#0c1626';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(0, -4, 23, Math.PI * 0.85, Math.PI * 0.15, true);
+        ctx.stroke();
+
+        ctx.restore();
+      };
+
+      drawEye(true);  // Ojo Izquierdo
+      drawEye(false); // Ojo Derecho
+
+      // --- NARIZ ---
+      ctx.strokeStyle = '#d4836d';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(avatarState.headYaw * 5, 18);
+      ctx.lineTo(avatarState.headYaw * 5 - 3, 28);
+      ctx.lineTo(avatarState.headYaw * 5 + 3, 29);
+      ctx.stroke();
+
+      // --- BOCA DINÁMICA (Tracking de apertura y sonrisa) ---
+      const mouthY = 48;
+      const mouthOpenAmount = avatarState.mouthOpen * 32; // Apertura vertical
+      const mouthW = 22 * avatarState.mouthWidth;
+
+      // --- PELO AZUL ESTILO ANIME (Mejorado fiel a la foto) ---
+      // Capas de sombras y mechones dinámicos múltiples
+      const hairDark = '#003399';
+      const hairBase = '#0055ff';
+      const hairBright = '#00a6ff';
+      const hairCyan = '#00f3ff';
+
+      // 1. Capa trasera de cabello (Sombras y mechones laterales prominentes)
+      ctx.fillStyle = hairDark;
+      const backSpikes = [
+        { x: -95, y: -65, rx: -35, ry: -30 },
+        { x: 95, y: -65, rx: 35, ry: -30 },
+        { x: -75, y: -110, rx: -30, ry: -40 },
+        { x: 75, y: -110, rx: 30, ry: -40 },
+        { x: 0, y: -145, rx: 0, ry: -35 }
+      ];
+      backSpikes.forEach(s => {
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 32, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // 2. Capa principal del pelo (Volumen superior en puntas anime)
+      ctx.fillStyle = hairBase;
+      const mainSpikes = [
+        { x: 0, y: -125, w: 55, h: -60 },
+        { x: -45, y: -115, w: 48, h: -55 },
+        { x: 45, y: -115, w: 48, h: -55 },
+        { x: -80, y: -85, w: 42, h: -45 },
+        { x: 80, y: -85, w: 42, h: -45 },
+        { x: -100, y: -45, w: 35, h: -35 },
+        { x: 100, y: -45, w: 35, h: -35 }
+      ];
+
+      mainSpikes.forEach(sp => {
+        ctx.beginPath();
+        ctx.moveTo(sp.x - sp.w / 2, sp.y);
+        ctx.quadraticCurveTo(sp.x + (sp.x < 0 ? -12 : 12), sp.y + sp.h, sp.x + sp.w / 2, sp.y);
+        ctx.fill();
+      });
+
+      // Flequillo frontal en mechones definidos que caen sobre las cejas
+      ctx.beginPath();
+      ctx.moveTo(-88, -40);
+      ctx.quadraticCurveTo(-65, -5, -45, -35);
+      ctx.quadraticCurveTo(-30, 8, -10, -38);
+      ctx.quadraticCurveTo(10, 12, 35, -38);
+      ctx.quadraticCurveTo(55, -5, 75, -40);
+      ctx.quadraticCurveTo(88, -40, 92, -55);
+      ctx.quadraticCurveTo(60, -125, 0, -130);
+      ctx.quadraticCurveTo(-60, -125, -92, -55);
+      ctx.closePath();
+      ctx.fill();
+
+      // 3. Brillos Neón Cyan & Azul Claro estilo cel-shading en el pelo
+      ctx.fillStyle = hairBright;
+      ctx.beginPath();
+      ctx.moveTo(-40, -95);
+      ctx.quadraticCurveTo(-20, -125, 10, -105);
+      ctx.quadraticCurveTo(-15, -85, -40, -95);
+      ctx.fill();
+
+      ctx.fillStyle = hairCyan;
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = hairCyan;
+      ctx.beginPath();
+      ctx.moveTo(-25, -75);
+      ctx.lineTo(-10, -92);
+      ctx.lineTo(15, -82);
+      ctx.lineTo(0, -68);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // --- COPAS DE AURICULARES GAMER (Mejoradas con anillos de luz LED neón) ---
+      const drawEarCup = (xPos, isLeft) => {
+        ctx.save();
+        ctx.translate(xPos, 5);
+
+        // Cuerpo exterior grande del auricular
+        ctx.fillStyle = '#0a0e17';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 32, 52, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Almohadilla negra suave
+        ctx.fillStyle = '#141c2c';
+        ctx.strokeStyle = '#05080e';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.ellipse(isLeft ? 6 : -6, 0, 22, 44, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Círculo Neón RGB en la copa externa del auricular
+        ctx.strokeStyle = '#00f3ff';
+        ctx.lineWidth = 4;
+        ctx.shadowBlur = 16;
+        ctx.shadowColor = '#00f3ff';
+        ctx.beginPath();
+        ctx.ellipse(isLeft ? -6 : 6, 0, 16, 28, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Tapa central metálica del auricular
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.ellipse(isLeft ? -6 : 6, 0, 10, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.shadowBlur = 0;
+        ctx.restore();
+      };
+
+      drawEarCup(-86, true);
+      drawEarCup(86, false);
+
+      // --- MICRÓFONO DE AURICULAR CON LED EN LA PUNTA ---
+      ctx.save();
+      ctx.translate(-82, 20);
+      ctx.strokeStyle = '#121824';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(15, 48, 62, 36);
+      ctx.stroke();
+
+      // Cabeza del micrófono con luz LED en estado de transmisión
+      ctx.fillStyle = '#090d14';
+      ctx.beginPath();
+      ctx.arc(62, 36, 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#00f3ff';
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = '#00f3ff';
+      ctx.beginPath();
+      ctx.arc(65, 36, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.restore();
+
+      ctx.restore(); // Restaurar estado de la cabeza
+      ctx.restore(); // Restaurar escalado y centrado principal
+    }
+
+    // --- BUCLE PRINCIPAL DE ANIMACIÓN Y RENDER ---
+    function animate(time) {
+      // Cálculo de FPS
+      frameCount++;
+      if (time - lastFrameTime >= 1000) {
+        fpsCounter.innerText = frameCount;
+        frameCount = 0;
+        lastFrameTime = time;
+      }
+
+      // Limpiar y dibujar Fondo
+      drawFuturisticBackground(time);
+
+      // Dibujar Avatar Eituprogamer
+      drawAvatar(time);
+
+      requestAnimationFrame(animate);
+    }
+
+    // Iniciar bucle cuando todo esté cargado
+    window.onload = () => {
+      requestAnimationFrame(animate);
+    };
+  </script>
+</body>
+</html>
